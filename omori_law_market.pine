@@ -1,0 +1,194 @@
+// Omori Law: Market Crash Shockwaves
+// ===========================================
+// Applies seismic Omori Law to stock market volatility decay.
+// Formula: n(t) = K / (t + c)^p
+// Where:
+//   n(t) = aftershock rate at time t
+//   K    = productivity (crash severity)
+//   c    = delay constant (early activity offset)
+//   p    = decay rate (typically ~1.0 in earthquakes, varies in markets)
+//
+// How it works:
+//   1. Detects a "mainshock" = large drawdown from recent high
+//   2. Measures aftershocks = daily volatility spikes above threshold
+//   3. Fits / overlays Omori decay envelope on chart
+//   4. Shows "seismic zones": Active / Elevated / Calm / Recovery
+// ===========================================
+
+//@version=6
+indicator("Omori Law: Market Shockwaves", shorttitle="OMORI", overlay=false, max_bars_back=500)
+
+// ─── INPUTS ───────────────────────────────────────────────────────────────────
+grp_crash = "Crash Detection"
+crash_pct         = input.float(10.0,  "Mainshock Threshold (%)",    minval=3.0, maxval=50.0, step=0.5, group=grp_crash,
+                    tooltip="Drawdown from recent high to define a crash (mainshock)")
+lookback_high     = input.int(60,      "Lookback for Recent High (bars)", minval=20, maxval=200,           group=grp_crash)
+
+grp_omori = "Omori Law Parameters"
+omori_K           = input.float(1.0,   "K – Productivity",           minval=0.1, maxval=10.0, step=0.1,  group=grp_omori,
+                    tooltip="Scales the overall height of the decay curve. Higher = more violent aftershock activity.")
+omori_c           = input.float(1.0,   "c – Time Offset (bars)",     minval=0.1, maxval=20.0, step=0.1,  group=grp_omori,
+                    tooltip="Prevents division by zero and smooths the early phase just after crash.")
+omori_p           = input.float(1.0,   "p – Decay Exponent",         minval=0.5, maxval=2.5, step=0.05,  group=grp_omori,
+                    tooltip="Controls how fast aftershocks decay. p=1 is classical Omori. p>1 = faster decay.")
+
+grp_vol = "Volatility / Aftershock Settings"
+vol_lookback      = input.int(20,      "ATR Period (volatility)",    minval=5, maxval=50,                 group=grp_vol)
+aftershock_mult   = input.float(1.5,   "Aftershock Spike Multiplier",minval=1.0, maxval=4.0, step=0.1,   group=grp_vol,
+                    tooltip="How many times the average ATR must be exceeded to count as an 'aftershock'")
+
+grp_display = "Display"
+show_decay_curve  = input.bool(true,   "Show Omori Decay Envelope",                                      group=grp_display)
+show_aftershocks  = input.bool(true,   "Show Aftershock Events",                                         group=grp_display)
+show_zones        = input.bool(true,   "Show Seismic Zone Background",                                   group=grp_display)
+show_info         = input.bool(true,   "Show Info Table",                                                 group=grp_display)
+
+// ─── CALCULATIONS ────────────────────────────────────────────────────────────
+
+// Volatility proxy: True Range normalized
+atr_val   = ta.atr(vol_lookback)
+avg_atr   = ta.sma(atr_val, vol_lookback)
+norm_vol  = atr_val / avg_atr  // 1.0 = average volatility
+
+// Rolling high for crash detection
+rolling_high = ta.highest(high, lookback_high)
+drawdown_pct = (rolling_high - close) / rolling_high * 100.0
+
+// ─── MAINSHOCK DETECTION ─────────────────────────────────────────────────────
+// A mainshock is when drawdown crosses the threshold FROM BELOW
+// (i.e., crash begins)
+is_crash_now = drawdown_pct >= crash_pct and drawdown_pct[1] < crash_pct
+
+// Track the most recent mainshock bar index
+var int crash_bar        = na
+var float crash_severity = na  // drawdown % at time of crash
+
+if is_crash_now
+    crash_bar        := bar_index
+    crash_severity   := drawdown_pct
+
+// Bars since last crash
+t_since_crash = bar_index - crash_bar
+
+// ─── OMORI DECAY CURVE ───────────────────────────────────────────────────────
+// n(t) = K / (t + c)^p
+// Normalized to 1.0 at t=0 for clean plotting
+omori_rate(t) =>
+    omori_K / math.pow(t + omori_c, omori_p)
+
+omori_norm_factor = omori_rate(0)  // value at t=0 for normalization
+
+decay_val = na(crash_bar) ? na :
+     omori_rate(t_since_crash) / omori_norm_factor
+
+// ─── AFTERSHOCK DETECTION ────────────────────────────────────────────────────
+// An aftershock = volatility spike above the adaptive threshold
+is_aftershock = norm_vol >= aftershock_mult and not na(crash_bar) and t_since_crash > 0
+
+// Magnitude proxy: how far above threshold (like Richter scale)
+aftershock_mag = is_aftershock ? (norm_vol - 1.0) : na
+
+// ─── SEISMIC ZONES (thresholds on the decay curve) ───────────────────────────
+// Based on elapsed time since mainshock relative to half-life
+// Using Omori to define the phases:
+//   Active Zone   : decay > 0.6  (hot aftershock zone)
+//   Elevated Zone : decay 0.3–0.6
+//   Fading Zone   : decay 0.1–0.3
+//   Calm Zone     : decay < 0.1  (market normalizing)
+
+zone_active   = not na(decay_val) and decay_val > 0.6
+zone_elevated = not na(decay_val) and decay_val > 0.3 and decay_val <= 0.6
+zone_fading   = not na(decay_val) and decay_val > 0.1 and decay_val <= 0.3
+zone_calm     = not na(decay_val) and decay_val <= 0.1
+
+// ─── PLOTS ───────────────────────────────────────────────────────────────────
+
+// Baseline: normalized volatility
+plot(norm_vol, "Normalized Volatility",
+     color=color.new(color.gray, 50), linewidth=1, style=plot.style_area)
+
+// Omori decay envelope
+decay_plot = show_decay_curve ? decay_val : na
+plot(decay_plot, "Omori Decay",
+     color=color.new(color.orange, 0), linewidth=2, style=plot.style_line)
+
+// Aftershock spikes (plotted as columns from 0)
+aftershock_plot = show_aftershocks ? aftershock_mag : na
+plot(aftershock_plot, "Aftershock",
+     color=color.new(color.red, 20), linewidth=1, style=plot.style_histogram)
+
+// Mainshock marker
+plotshape(is_crash_now, "Mainshock", shape.labeldown, location.top,
+     color=color.new(color.red, 0), text="⚡CRASH", textcolor=color.white, size=size.normal)
+
+// Aftershock markers (small triangles above the histogram)
+plotshape(show_aftershocks and is_aftershock, "Aftershock Spike",
+     shape.triangleup, location.abovebar,
+     color=color.new(color.orange, 30), size=size.tiny)
+
+// ─── ZONE BACKGROUNDS ────────────────────────────────────────────────────────
+bgcolor(show_zones and zone_active   ? color.new(color.red,    88) : na, title="Active Zone")
+bgcolor(show_zones and zone_elevated ? color.new(color.orange, 88) : na, title="Elevated Zone")
+bgcolor(show_zones and zone_fading   ? color.new(color.yellow, 90) : na, title="Fading Zone")
+bgcolor(show_zones and zone_calm     ? color.new(color.teal,   90) : na, title="Calm/Recovery Zone")
+
+// ─── REFERENCE LINES ─────────────────────────────────────────────────────────
+hline(1.0, "Average Volatility",  color=color.new(color.gray, 60), linestyle=hline.style_dashed)
+hline(aftershock_mult, "Aftershock Threshold",
+     color=color.new(color.red, 40), linestyle=hline.style_dotted)
+hline(0.3, "Omori: Fading",  color=color.new(color.orange, 60), linestyle=hline.style_dotted)
+hline(0.1, "Omori: Calm",    color=color.new(color.teal,   60), linestyle=hline.style_dotted)
+
+// ─── INFO TABLE ──────────────────────────────────────────────────────────────
+var table info_tbl = table.new(position.top_right, 2, 8,
+     bgcolor=color.new(color.black, 75), border_width=1,
+     border_color=color.new(color.gray, 60))
+
+cell_hdr(col, row, txt) =>
+    table.cell(info_tbl, col, row, txt,
+         text_color=color.new(color.gray, 20), text_size=size.small,
+         bgcolor=color.new(color.black, 60))
+
+cell_val(col, row, txt, clr) =>
+    table.cell(info_tbl, col, row, txt,
+         text_color=clr, text_size=size.small,
+         bgcolor=color.new(color.black, 75))
+
+if show_info and barstate.islast
+    cell_hdr(0, 0, "⚡ Omori Law")
+    cell_val(1, 0, "Shockwave Monitor", color.orange)
+
+    cell_hdr(0, 1, "Days Since Crash")
+    days_str = na(crash_bar) ? "No crash" : str.tostring(t_since_crash) + " bars"
+    cell_val(1, 1, days_str, color.white)
+
+    cell_hdr(0, 2, "Crash Drawdown")
+    dd_str = na(crash_severity) ? "–" : str.tostring(math.round(crash_severity, 1)) + "%"
+    cell_val(1, 2, dd_str, color.red)
+
+    cell_hdr(0, 3, "Decay Rate Now")
+    decay_str = na(decay_val) ? "–" : str.tostring(math.round(decay_val * 100, 1)) + "%"
+    cell_val(1, 3, decay_str, color.orange)
+
+    cell_hdr(0, 4, "Current Volatility")
+    vol_str = str.tostring(math.round(norm_vol, 2)) + "× avg"
+    vol_clr = norm_vol > aftershock_mult ? color.red :
+              norm_vol > 1.5 ? color.orange : color.green
+    cell_val(1, 4, vol_str, vol_clr)
+
+    cell_hdr(0, 5, "Seismic Zone")
+    zone_str = zone_active   ? "🔴 Active"   :
+               zone_elevated ? "🟠 Elevated" :
+               zone_fading   ? "🟡 Fading"   :
+               zone_calm     ? "🟢 Calm"     : "⚪ Pre-crash"
+    zone_clr = zone_active   ? color.red    :
+               zone_elevated ? color.orange :
+               zone_fading   ? color.yellow :
+               zone_calm     ? color.teal   : color.gray
+    cell_val(1, 5, zone_str, zone_clr)
+
+    cell_hdr(0, 6, "p (decay exp)")
+    cell_val(1, 6, str.tostring(omori_p), color.silver)
+
+    cell_hdr(0, 7, "K (productivity)")
+    cell_val(1, 7, str.tostring(omori_K), color.silver)
