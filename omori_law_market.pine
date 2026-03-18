@@ -20,21 +20,21 @@ indicator("Omori Law: Market Shockwaves", shorttitle="OMORI", overlay=false, max
 
 // ─── INPUTS ───────────────────────────────────────────────────────────────────
 grp_crash = "Crash Detection"
-crash_pct         = input.float(10.0,  "Mainshock Threshold (%)",    minval=3.0, maxval=50.0, step=0.5, group=grp_crash,
+crash_pct         = input.float(12.0,  "Mainshock Threshold (%)",    minval=3.0, maxval=50.0, step=0.5, group=grp_crash,
                     tooltip="Drawdown from recent high to define a crash (mainshock)")
 lookback_high     = input.int(60,      "Lookback for Recent High (bars)", minval=20, maxval=200,           group=grp_crash)
 
 grp_omori = "Omori Law Parameters"
-omori_K           = input.float(1.0,   "K – Productivity",           minval=0.1, maxval=10.0, step=0.1,  group=grp_omori,
+omori_K           = input.float(1.2,   "K – Productivity",           minval=0.1, maxval=10.0, step=0.1,  group=grp_omori,
                     tooltip="Scales the overall height of the decay curve. Higher = more violent aftershock activity.")
-omori_c           = input.float(1.0,   "c – Time Offset (bars)",     minval=0.1, maxval=20.0, step=0.1,  group=grp_omori,
-                    tooltip="Prevents division by zero and smooths the early phase just after crash.")
-omori_p           = input.float(1.0,   "p – Decay Exponent",         minval=0.5, maxval=2.5, step=0.05,  group=grp_omori,
-                    tooltip="Controls how fast aftershocks decay. p=1 is classical Omori. p>1 = faster decay.")
+omori_c           = input.float(2.0,   "c – Time Offset (bars)",     minval=0.1, maxval=20.0, step=0.1,  group=grp_omori,
+                    tooltip="Prevents division by zero. Use 2.0 for Nifty to absorb circuit breaker noise on crash day.")
+omori_p           = input.float(0.70,  "p – Decay Exponent",         minval=0.3, maxval=2.5,  step=0.05, group=grp_omori,
+                    tooltip="Controls how fast aftershocks decay. p=1 is classical Omori. Lower = slower decay. Nifty optimal: 0.70")
 
 grp_vol = "Volatility / Aftershock Settings"
 vol_lookback      = input.int(20,      "ATR Period (volatility)",    minval=5, maxval=50,                 group=grp_vol)
-aftershock_mult   = input.float(1.5,   "Aftershock Spike Multiplier",minval=1.0, maxval=4.0, step=0.1,   group=grp_vol,
+aftershock_mult   = input.float(1.8,   "Aftershock Spike Multiplier",minval=1.0, maxval=4.0, step=0.1,   group=grp_vol,
                     tooltip="How many times the average ATR must be exceeded to count as an 'aftershock'")
 
 grp_display = "Display"
@@ -67,16 +67,16 @@ if is_crash_now
     crash_bar        := bar_index
     crash_severity   := drawdown_pct
 
-// Bars since last crash
-t_since_crash = bar_index - crash_bar
+// Bars since last crash — guard against na crash_bar
+t_since_crash = na(crash_bar) ? 0 : math.max(0, bar_index - crash_bar)
 
 // ─── OMORI DECAY CURVE ───────────────────────────────────────────────────────
 // n(t) = K / (t + c)^p
 // Normalized to 1.0 at t=0 for clean plotting
 omori_rate(t) =>
-    omori_K / math.pow(t + omori_c, omori_p)
+    omori_K / math.pow(float(t) + omori_c, omori_p)
 
-omori_norm_factor = omori_rate(0)  // value at t=0 for normalization
+omori_norm_factor = omori_K / math.pow(0.0 + omori_c, omori_p)  // decay at t=0 for normalization
 
 decay_val = na(crash_bar) ? na :
      omori_rate(t_since_crash) / omori_norm_factor
@@ -123,7 +123,7 @@ plotshape(is_crash_now, "Mainshock", shape.labeldown, location.top,
 
 // Aftershock markers (small triangles above the histogram)
 plotshape(show_aftershocks and is_aftershock, "Aftershock Spike",
-     shape.triangleup, location.abovebar,
+     shape.triangleup, location.top,
      color=color.new(color.orange, 30), size=size.tiny)
 
 // ─── ZONE BACKGROUNDS ────────────────────────────────────────────────────────
@@ -190,5 +190,5 @@ if show_info and barstate.islast
     cell_hdr(0, 6, "p (decay exp)")
     cell_val(1, 6, str.tostring(omori_p), color.silver)
 
-    cell_hdr(0, 7, "K (productivity)")
-    cell_val(1, 7, str.tostring(omori_K), color.silver)
+    cell_hdr(0, 7, "K / c / threshold")
+    cell_val(1, 7, str.tostring(omori_K) + " / " + str.tostring(omori_c) + " / " + str.tostring(crash_pct) + "%", color.silver)
